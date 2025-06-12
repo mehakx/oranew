@@ -1,18 +1,17 @@
-# simplified_enhanced_app.py - Deployment-Ready Therapeutic AI
-# Optimized for cloud deployment with minimal dependencies
+# Enhanced Ora Application with Ash.ai-like Capabilities
+# Deployment-ready with semantic memory and therapeutic features
 
 import os
 import json
 import uuid
-from datetime import datetime, timedelta
+import logging
+from datetime import datetime
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
 from openai import OpenAI
-import sqlite3
-import schedule
-import time
-from threading import Thread
-import logging
+
+# Import our custom memory system
+from ora_memory import OraMemory
 
 # Initialize Flask app
 app = Flask(__name__, template_folder="templates", static_folder="static")
@@ -25,16 +24,14 @@ logger = logging.getLogger(__name__)
 # Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# In-memory storage for conversations (simplified for deployment)
-conversations = {}
-user_profiles = {}
-therapeutic_sessions = {}
+# Initialize our semantic memory system
+memory = OraMemory(db_path="ora_memory.db")
 
 # Crisis keywords for detection
 CRISIS_KEYWORDS = [
     "suicide", "kill myself", "end it all", "not worth living", 
-    "hurt myself", "self harm", "cutting", "overdose", "jump off",
-    "can't go on", "want to die", "better off dead"
+    "hurt myself", "self harm", "cutting", "overdose", 
+    "jump off", "can't go on", "want to die", "better off dead"
 ]
 
 # Therapeutic techniques database
@@ -74,48 +71,6 @@ CRISIS_RESOURCES = {
         "chat": "talksuicide.ca"
     }
 }
-
-def init_database():
-    """Initialize SQLite database for persistent storage"""
-    conn = sqlite3.connect('therapeutic_ai.db')
-    cursor = conn.cursor()
-    
-    # Create tables
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS conversations (
-            id TEXT PRIMARY KEY,
-            user_id TEXT,
-            message TEXT,
-            response TEXT,
-            emotion TEXT,
-            timestamp DATETIME,
-            crisis_level INTEGER
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS user_profiles (
-            user_id TEXT PRIMARY KEY,
-            name TEXT,
-            preferences TEXT,
-            created_at DATETIME,
-            last_active DATETIME
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS therapeutic_sessions (
-            id TEXT PRIMARY KEY,
-            user_id TEXT,
-            session_type TEXT,
-            techniques_used TEXT,
-            effectiveness_rating INTEGER,
-            timestamp DATETIME
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
 
 def detect_crisis(text):
     """Detect crisis indicators in user message"""
@@ -173,10 +128,9 @@ def classify_emotion(text):
         return "neutral"
 
 def generate_therapeutic_response(user_message, emotion, user_id, crisis_level):
-    """Generate therapeutic response using OpenAI with context"""
-    
-    # Get user context
-    user_context = get_user_context(user_id)
+    """Generate therapeutic response using OpenAI with semantic memory context"""
+    # Get user context from semantic memory
+    user_context = memory.get_user_context(user_id, query=user_message)
     
     # Crisis intervention takes priority
     if crisis_level >= 2:
@@ -184,19 +138,20 @@ def generate_therapeutic_response(user_message, emotion, user_id, crisis_level):
         if crisis_response:
             return crisis_response["message"] + "\n\n" + f"Crisis Hotline: {crisis_response['resources']['hotline']}"
     
-    # Build therapeutic prompt
-    system_prompt = f"""You are a compassionate therapeutic AI assistant. The user is experiencing {emotion}. 
-    
-    User context: {user_context}
-    
-    Provide a therapeutic response that:
-    1. Validates their feelings
-    2. Offers gentle guidance
-    3. Suggests a specific coping technique
-    4. Encourages professional help if needed
-    5. Maintains hope and support
-    
-    Keep responses warm, empathetic, and under 200 words."""
+    # Build therapeutic prompt with semantic memory context
+    system_prompt = f"""You are a compassionate therapeutic AI assistant. The user is experiencing {emotion}.
+
+User context from memory:
+{user_context}
+
+Provide a therapeutic response that:
+1. Validates their feelings
+2. Offers gentle guidance
+3. Suggests a specific coping technique
+4. Encourages professional help if needed
+5. Maintains hope and support
+
+Keep responses warm, empathetic, and under 200 words."""
     
     try:
         response = client.chat.completions.create(
@@ -210,7 +165,7 @@ def generate_therapeutic_response(user_message, emotion, user_id, crisis_level):
         
         ai_response = response.choices[0].message.content.strip()
         
-        # Add technique suggestion
+        # Add technique suggestion if emotion in THERAPEUTIC_TECHNIQUES
         if emotion in THERAPEUTIC_TECHNIQUES:
             techniques = THERAPEUTIC_TECHNIQUES[emotion]
             technique_key = list(techniques.keys())[0]  # Get first technique
@@ -222,223 +177,175 @@ def generate_therapeutic_response(user_message, emotion, user_id, crisis_level):
         logger.error(f"OpenAI API error: {e}")
         return "I'm here to listen and support you. Sometimes I have technical difficulties, but your feelings are valid and important. Please consider reaching out to a mental health professional if you need immediate support."
 
-def get_user_context(user_id):
-    """Get recent conversation context for user"""
-    if user_id in conversations:
-        recent_conversations = conversations[user_id][-3:]  # Last 3 conversations
-        context = "Recent conversations: "
-        for conv in recent_conversations:
-            context += f"User felt {conv.get('emotion', 'neutral')}. "
-        return context
-    return "New user, no previous context."
+# Flask routes
+@app.route('/')
+def home():
+    """Render home page"""
+    return render_template('index.html')
 
-def store_conversation(user_id, user_message, ai_response, emotion, crisis_level):
-    """Store conversation in memory and database"""
-    conversation_id = str(uuid.uuid4())
-    timestamp = datetime.now()
-    
-    # Store in memory
-    if user_id not in conversations:
-        conversations[user_id] = []
-    
-    conversations[user_id].append({
-        "id": conversation_id,
-        "user_message": user_message,
-        "ai_response": ai_response,
-        "emotion": emotion,
-        "crisis_level": crisis_level,
-        "timestamp": timestamp
-    })
-    
-    # Store in database
-    try:
-        conn = sqlite3.connect('therapeutic_ai.db')
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO conversations (id, user_id, message, response, emotion, timestamp, crisis_level)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (conversation_id, user_id, user_message, ai_response, emotion, timestamp, crisis_level))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        logger.error(f"Database storage error: {e}")
+@app.route('/health')
+def health():
+    """Health check endpoint"""
+    return jsonify({"status": "healthy"})
 
-# Routes
-@app.route("/")
-def index():
-    return render_template("index.html")
-
-@app.route("/health")
-def health_check():
-    return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()})
-
-@app.route("/classify", methods=["POST"])
-def classify():
-    """Enhanced emotion classification with therapeutic context"""
-    try:
-        data = request.get_json()
-        text = data.get("text", "").strip()
-        user_id = data.get("user_id", f"user_{uuid.uuid4().hex[:8]}")
-        
-        if not text:
-            return jsonify({"error": "No text provided"}), 400
-        
-        # Classify emotion
-        emotion = classify_emotion(text)
-        
-        # Detect crisis level
-        crisis_level = detect_crisis(text)
-        
-        return jsonify({
-            "emotion": emotion,
-            "crisis_level": crisis_level,
-            "user_id": user_id,
-            "timestamp": datetime.now().isoformat()
-        })
-        
-    except Exception as e:
-        logger.error(f"Classification error: {e}")
-        return jsonify({"error": "Classification failed"}), 500
-
-@app.route("/respond", methods=["POST"])
-def respond():
-    """Generate therapeutic AI response"""
-    try:
-        data = request.get_json()
-        user_message = data.get("text", "").strip()
-        user_id = data.get("user_id", f"user_{uuid.uuid4().hex[:8]}")
-        emotion = data.get("emotion", "neutral")
-        
-        if not user_message:
-            return jsonify({"error": "No message provided"}), 400
-        
-        # Detect crisis level
-        crisis_level = detect_crisis(user_message)
-        
-        # Generate therapeutic response
-        ai_response = generate_therapeutic_response(user_message, emotion, user_id, crisis_level)
-        
-        # Store conversation
-        store_conversation(user_id, user_message, ai_response, emotion, crisis_level)
-        
-        return jsonify({
-            "response": ai_response,
-            "emotion": emotion,
-            "crisis_level": crisis_level,
-            "user_id": user_id,
-            "timestamp": datetime.now().isoformat()
-        })
-        
-    except Exception as e:
-        logger.error(f"Response generation error: {e}")
-        return jsonify({"error": "Response generation failed"}), 500
-
-@app.route("/chat", methods=["POST"])
+@app.route('/chat', methods=['POST'])
 def chat():
-    """Combined classification and response endpoint"""
+    """Main chat endpoint with semantic memory and therapeutic features"""
     try:
         data = request.get_json()
-        user_message = data.get("message", "").strip()
-        user_id = data.get("user_id", f"user_{uuid.uuid4().hex[:8]}")
-        
-        if not user_message:
-            return jsonify({"error": "No message provided"}), 400
-        
-        # Classify emotion
-        emotion = classify_emotion(user_message)
+        message = data.get('message', '')
+        user_id = data.get('user_id', str(uuid.uuid4()))
         
         # Detect crisis level
-        crisis_level = detect_crisis(user_message)
+        crisis_level = detect_crisis(message)
         
-        # Generate therapeutic response
-        ai_response = generate_therapeutic_response(user_message, emotion, user_id, crisis_level)
+        # Classify emotion
+        emotion = classify_emotion(message)
         
-        # Store conversation
-        store_conversation(user_id, user_message, ai_response, emotion, crisis_level)
+        # Generate therapeutic response with semantic memory context
+        response = generate_therapeutic_response(message, emotion, user_id, crisis_level)
+        
+        # Store conversation in semantic memory
+        conversation_id = str(uuid.uuid4())
+        memory.store_conversation(user_id, conversation_id, message, response, emotion, crisis_level)
+        
+        # Generate insights periodically (every 5 conversations)
+        try:
+            # This would normally be done asynchronously or on a schedule
+            insights = memory.generate_user_insights(user_id, client)
+        except Exception as e:
+            logger.error(f"Error generating insights: {e}")
         
         return jsonify({
-            "message": user_message,
-            "response": ai_response,
+            "response": response,
             "emotion": emotion,
-            "crisis_level": crisis_level,
-            "user_id": user_id,
-            "timestamp": datetime.now().isoformat()
+            "user_id": user_id
         })
         
     except Exception as e:
-        logger.error(f"Chat error: {e}")
-        return jsonify({"error": "Chat processing failed"}), 500
+        logger.error(f"Chat endpoint error: {e}")
+        return jsonify({
+            "response": "I'm here to support you. I'm having some technical issues, but please know that help is available if you need it.",
+            "error": str(e)
+        })
 
-@app.route("/insights/<user_id>")
+@app.route('/insights/<user_id>', methods=['GET'])
 def get_insights(user_id):
-    """Get user insights and patterns"""
+    """Get therapeutic insights for user"""
     try:
-        if user_id not in conversations:
-            return jsonify({"error": "User not found"}), 404
-        
-        user_conversations = conversations[user_id]
-        
-        # Analyze patterns
-        emotions = [conv.get("emotion", "neutral") for conv in user_conversations]
-        emotion_counts = {}
-        for emotion in emotions:
-            emotion_counts[emotion] = emotion_counts.get(emotion, 0) + 1
-        
-        # Calculate trends
-        recent_emotions = emotions[-5:] if len(emotions) >= 5 else emotions
-        crisis_levels = [conv.get("crisis_level", 1) for conv in user_conversations]
-        avg_crisis_level = sum(crisis_levels) / len(crisis_levels) if crisis_levels else 1
+        # Generate fresh insights
+        insights = memory.generate_user_insights(user_id, client)
         
         return jsonify({
             "user_id": user_id,
-            "total_conversations": len(user_conversations),
-            "emotion_patterns": emotion_counts,
-            "recent_emotions": recent_emotions,
-            "average_crisis_level": round(avg_crisis_level, 2),
-            "last_conversation": user_conversations[-1]["timestamp"].isoformat() if user_conversations else None
+            "insights": insights
         })
-        
     except Exception as e:
-        logger.error(f"Insights error: {e}")
-        return jsonify({"error": "Failed to generate insights"}), 500
+        logger.error(f"Insights endpoint error: {e}")
+        return jsonify({
+            "error": str(e)
+        }), 500
 
-@app.route("/therapeutic_exercise", methods=["POST"])
+@app.route('/progress/<user_id>', methods=['GET'])
+def get_progress(user_id):
+    """Get emotional progress tracking for user"""
+    try:
+        # This would normally query the database for emotion trends
+        # For now, we'll return a placeholder
+        return jsonify({
+            "user_id": user_id,
+            "progress": "Progress tracking is available in the full version."
+        })
+    except Exception as e:
+        logger.error(f"Progress endpoint error: {e}")
+        return jsonify({
+            "error": str(e)
+        }), 500
+
+@app.route('/therapeutic_exercise', methods=['POST'])
 def get_therapeutic_exercise():
-    """Get personalized therapeutic exercise"""
+    """Get therapeutic exercise recommendation"""
     try:
         data = request.get_json()
-        emotion = data.get("emotion", "neutral")
-        user_id = data.get("user_id")
+        emotion = data.get('emotion', 'anxiety')
         
         if emotion in THERAPEUTIC_TECHNIQUES:
             techniques = THERAPEUTIC_TECHNIQUES[emotion]
             return jsonify({
                 "emotion": emotion,
-                "techniques": techniques,
-                "user_id": user_id,
-                "timestamp": datetime.now().isoformat()
+                "techniques": techniques
             })
         else:
             return jsonify({
                 "emotion": emotion,
-                "techniques": {
-                    "general": "Take a moment to breathe deeply and be present with your feelings. Remember that all emotions are temporary and valid."
-                },
-                "user_id": user_id,
-                "timestamp": datetime.now().isoformat()
+                "techniques": THERAPEUTIC_TECHNIQUES["anxiety"]  # Default to anxiety
             })
-            
     except Exception as e:
-        logger.error(f"Therapeutic exercise error: {e}")
-        return jsonify({"error": "Failed to get exercise"}), 500
+        logger.error(f"Therapeutic exercise endpoint error: {e}")
+        return jsonify({
+            "error": str(e)
+        }), 500
 
-if __name__ == "__main__":
-    # Initialize database
-    init_database()
-    
-    # Start the application
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
-
-
+@app.route('/crisis_assessment', methods=['POST'])
+def assess_crisis():
+    """Assess crisis level in text"""
+    try:
+        data = request.get_json()
+        text = data.get('text', '')
         
+        crisis_level = detect_crisis(text)
+        response = get_crisis_response(crisis_level)
+        
+        return jsonify({
+            "crisis_level": crisis_level,
+            "response": response
+        })
+    except Exception as e:
+        logger.error(f"Crisis assessment endpoint error: {e}")
+        return jsonify({
+            "error": str(e)
+        }), 500
+
+# Legacy endpoints for backward compatibility
+@app.route('/classify', methods=['POST'])
+def classify():
+    """Legacy emotion classification endpoint"""
+    try:
+        data = request.get_json()
+        text = data.get('text', '')
+        
+        emotion = classify_emotion(text)
+        
+        return jsonify({
+            "emotion": emotion
+        })
+    except Exception as e:
+        logger.error(f"Classification endpoint error: {e}")
+        return jsonify({
+            "error": str(e)
+        }), 500
+
+@app.route('/respond', methods=['POST'])
+def respond():
+    """Legacy response generation endpoint"""
+    try:
+        data = request.get_json()
+        message = data.get('message', '')
+        emotion = data.get('emotion', 'neutral')
+        user_id = data.get('user_id', str(uuid.uuid4()))
+        
+        # Use the enhanced response generation
+        response = generate_therapeutic_response(message, emotion, user_id, 1)
+        
+        return jsonify({
+            "response": response
+        })
+    except Exception as e:
+        logger.error(f"Response endpoint error: {e}")
+        return jsonify({
+            "error": str(e)
+        }), 500
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
