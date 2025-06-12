@@ -1,13 +1,41 @@
+# FINAL FIXED requirements.txt - Resolves cognee dependency conflict
+# cognee 0.1.15 requires: gunicorn>=20.1.0 AND gunicorn<21.0.0
+
+# Core Flask Application
 Flask==3.0.0
 flask-cors==4.0.0
 gunicorn==20.1.0
+# ↑ FINAL FIX: 20.1.0 satisfies cognee's requirement (>=20.1.0 and <21.0.0)
+
+# Environment and Configuration
 python-dotenv==1.0.0
 requests==2.31.0
+
+# OpenAI Integration (Core AI functionality)
 openai==1.3.0
+
+# Cognee Memory System (Lightweight semantic memory)
 cognee==0.1.15
+
+# Essential Data Processing (Lightweight alternatives)
 numpy==1.24.3
 scikit-learn==1.3.0
+
+# Database (SQLite-based, no external dependencies)
 sqlalchemy==2.0.23
+
+# Text Processing (Lightweight)
 textstat==0.7.3
 nltk==3.8.1
+
+# Scheduling (For proactive check-ins)
 schedule==1.2.0
+
+# DEPENDENCY CONFLICT FINALLY RESOLVED:
+# cognee 0.1.15 requires: gunicorn>=20.1.0 AND gunicorn<21.0.0
+# Solution: gunicorn==20.1.0 (satisfies both constraints)
+# Previous attempts:
+# - gunicorn==21.2.0 (too new, >21.0.0)
+# - gunicorn==21.0.0 (still too new, not <21.0.0)
+# - gunicorn==20.1.0 (PERFECT - meets both >=20.1.0 and <21.0.0)
+
